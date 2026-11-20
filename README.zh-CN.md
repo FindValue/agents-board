@@ -14,6 +14,8 @@
 | VS Code Copilot | `~/.copilot/session-state` 的 `events.jsonl` + `workspace.yaml` |
 | opencode | `~/.local/share/opencode/opencode.db`（只读 SQLite） |
 
+opencode 适配器基于 **opencode v2.3.2** 开发与验证。它的 SQLite 结构是私有的，后续版本可能变化。
+
 三者的身份探测、去留判定、进程存活检查都复用 `core/` 里的同一套工具；各 CLI 特有的解析逻辑留在自己的适配器里。
 
 ## 运行

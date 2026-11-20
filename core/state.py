@@ -18,7 +18,7 @@ STATE_META: dict[str, tuple[str, str, bool]] = {
     "awaiting": ("等待你授权", "#ff5b5b", True),
     "error": ("上一轮异常", "#ff9f43", True),
     "compact": ("压缩上下文", "#ffd166", False),
-    "subagent": ("子代理运行中", "#3ddc97", False),
+    "subagent": ("子代理运行中", "#2dd4bf", False),
     "tool": ("执行工具", "#4bc0ff", False),
     "model": ("请求模型中", "#a78bfa", False),
     "hook": ("运行钩子", "#8894a0", False),

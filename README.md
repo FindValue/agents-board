@@ -14,6 +14,8 @@ Built on the Python standard library only — zero dependencies, no network, no 
 | VS Code Copilot | `events.jsonl` + `workspace.yaml` in `~/.copilot/session-state` |
 | opencode | `~/.local/share/opencode/opencode.db` (read-only SQLite) |
 
+The opencode adapter is developed and verified against **opencode v2.3.2**. Its SQLite schema is private and may change in later releases.
+
 Identity probing, session retention, and process-liveness checks are shared across all three via `core/`; CLI-specific parsing stays inside each adapter.
 
 ## Running

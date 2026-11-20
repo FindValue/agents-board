@@ -51,6 +51,16 @@ ORDER BY time_updated DESC LIMIT 50
 _RECORDS = "SELECT seq, type, data, time_updated FROM session_message WHERE session_id=? AND time_updated>? ORDER BY seq"
 _TAIL = "SELECT seq, type, data, time_updated FROM session_message WHERE session_id=? ORDER BY seq DESC LIMIT ?"
 _TURN_COUNT = "SELECT COUNT(*) FROM session_message WHERE session_id=? AND type='user'"
+# A subagent's work lives in its own session (parent_id set); the parent's message
+# stream can end at idle while a child still holds an execution claim. Only the claim
+# counts as "running": unlike the parent, a subagent has no "open but waiting for
+# input" gap, so a fresh time_updated from a finished child would pin the card on
+# 子代理运行中 long after it is done.
+_BUSY_CHILDREN = (
+    "SELECT parent_id, COUNT(*) AS n FROM session_v2 "
+    "WHERE parent_id IS NOT NULL AND time_suspended IS NOT NULL "
+    "GROUP BY parent_id"
+)
 
 # Cold start reads the tail only; the newest rows are what the state machine needs, and
 # the counters accumulate from there — the same trade the jsonl adapters make at tail_kb.
@@ -278,9 +288,12 @@ class OpencodeSource(AgentSource):
         rows = list(conn.execute(_SESSIONS))
         hosts = self._hosts(st, now)
         windows = self._claim(rows, hosts, now)
+        busy_children = {r["parent_id"]: r["n"] for r in conn.execute(_BUSY_CHILDREN)}
         sessions = []
         for row in rows:
-            session = self._snapshot(conn, row, now, st, windows.get(row["id"], 0))
+            session = self._snapshot(
+                conn, row, now, st, windows.get(row["id"], 0), busy_children
+            )
             if session is not None:
                 sessions.append(session)
 
@@ -411,6 +424,7 @@ class OpencodeSource(AgentSource):
         now: float,
         st: _State,
         pid: int,
+        busy_children: dict[str, int],
     ) -> AgentSession | None:
         key = row["id"]
         updated = _ms(row["time_updated"])
@@ -436,6 +450,11 @@ class OpencodeSource(AgentSource):
         state, detail = fold.derive(now, _ms(row["time_compacting"]))
         if not alive:
             state, detail = dead_detail(age)
+        elif key in busy_children and state in ("idle", "starting"):
+            # The parent's own stream ended at idle, but its subagents are still
+            # working — that is "子代理运行中", not "空闲待输入".
+            n = busy_children[key]
+            state, detail = "subagent", f"{n} 个子代理运行中"
 
         turn_count = conn.execute(_TURN_COUNT, (key,)).fetchone()[0]
         tasks_done, tasks_total, current_task = fold.tasks()
