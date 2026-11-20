@@ -11,26 +11,27 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 import config
+from core import i18n
 
-# state key -> (label, color, needs the user)
+# state key -> (label key in i18n, color, needs the user)
 STATE_META: dict[str, tuple[str, str, bool]] = {
-    "asking": ("等你回答", "#ff5b5b", True),
-    "awaiting": ("等待你授权", "#ff5b5b", True),
-    "error": ("上一轮异常", "#ff9f43", True),
-    "compact": ("压缩上下文", "#ffd166", False),
-    "subagent": ("子代理运行中", "#2dd4bf", False),
-    "tool": ("执行工具", "#4bc0ff", False),
-    "model": ("请求模型中", "#a78bfa", False),
-    "hook": ("运行钩子", "#8894a0", False),
-    "starting": ("启动中", "#8894a0", False),
+    "asking": ("state_asking", "#ff5b5b", True),
+    "awaiting": ("state_awaiting", "#ff5b5b", True),
+    "error": ("state_error", "#ff9f43", True),
+    "compact": ("state_compact", "#ffd166", False),
+    "subagent": ("state_subagent", "#2dd4bf", False),
+    "tool": ("state_tool", "#4bc0ff", False),
+    "model": ("state_model", "#a78bfa", False),
+    "hook": ("state_hook", "#8894a0", False),
+    "starting": ("state_starting", "#8894a0", False),
     # Green on purpose: a finished turn waiting for the next prompt is the state you
     # want to spot from across the desk, and grey was invisible at 38% window opacity.
-    "idle": ("空闲待输入", "#3ddc97", False),
+    "idle": ("state_idle", "#3ddc97", False),
 }
 
 
 def state_label(state: str) -> str:
-    return STATE_META.get(state, (state, "#d7dee6", False))[0]
+    return i18n.t(STATE_META.get(state, (state, "#d7dee6", False))[0])
 
 
 def state_color(state: str) -> str:
@@ -121,7 +122,7 @@ def dropped(age: float, alive: bool | None = None) -> bool:
 
 def dead_detail(age: float) -> tuple[str, str]:
     """A session whose process is gone reads as finished work, never as a live state."""
-    return "idle", f"进程已退出 · 最后活动 {fmt_age(age)}"
+    return "idle", i18n.t("dead_detail", age=fmt_age(age))
 
 
 def fmt_duration(seconds: float) -> str:
@@ -135,12 +136,12 @@ def fmt_duration(seconds: float) -> str:
 
 def fmt_age(seconds: float) -> str:
     if seconds < 5:
-        return "刚刚"
+        return i18n.t("age_now")
     if seconds < 60:
-        return f"{int(seconds)}s 前"
+        return i18n.t("age_seconds", n=int(seconds))
     if seconds < 3600:
-        return f"{int(seconds / 60)}m 前"
-    return f"{int(seconds / 3600)}h 前"
+        return i18n.t("age_minutes", n=int(seconds / 60))
+    return i18n.t("age_hours", n=int(seconds / 3600))
 
 
 def fmt_tokens(count: int) -> str:
@@ -203,7 +204,7 @@ def label_for(payload) -> str:
         ]
         texts = [t for t in texts if t.strip()]
         if texts:
-            return texts[0] if len(texts) == 1 else f"{texts[0]} 等 {len(texts)} 问"
+            return texts[0] if len(texts) == 1 else i18n.t("n_questions", first=texts[0], n=len(texts))
     for key in _LABEL_KEYS:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():

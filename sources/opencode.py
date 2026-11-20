@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass, field
 
 import config
+from core import i18n
 from core.fs import homes, project_name
 from core.pid import console_of, cwd_of, processes
 from core.state import (
@@ -209,13 +210,13 @@ class _Fold:
         for record in self.ordered():
             for part in record.parts:
                 if part.status in ("completed", "error"):
-                    out.append(f"{hms(record.ts)} {part.name} {'失败' if part.status == 'error' else 'ok'}")
+                    out.append(f"{hms(record.ts)} {part.name} {i18n.t('act_failed') if part.status == 'error' else 'ok'}")
         return out[-3:]
 
     def derive(self, now: float, compacting: float) -> tuple[str, str]:
         records = self.ordered()
         if not records:
-            return "starting", "初始化中"
+            return "starting", i18n.t("detail_starting")
         newest = records[-1]
         opened = max((r.seq for r in records if r.kind == "user"), default=0)
         in_turn = [part for r in records if r.seq > opened for part in r.parts]
@@ -224,24 +225,28 @@ class _Fold:
         if newest.kind == "idle":
             outcome = newest.text or "succeeded"
             if outcome not in ("succeeded", ""):
-                return "error", f"上一轮 {clip(outcome, 40)}"
+                return "error", i18n.t("detail_prev_turn", outcome=clip(outcome, 40))
             waited = fmt_age(now - newest.ts)
             last = max((r for r in records if r.kind == "assistant"), key=lambda r: r.seq, default=None)
             # `completed=None` means the assistant row was never closed — the model may
             # still be streaming (the idle row marks the *previous* turn's end, and the
             # new user prompt hasn't landed in the database yet).
             if last and not last.closed:
-                return "model", f"生成回复中 · {fmt_age(now - newest.ts)}"
+                return "model", i18n.t("detail_model", age=waited)
             if last and last.closed:
-                return "idle", f"上轮 {fmt_duration(max(0.0, last.closed - last.opened))} · {waited}"
-            return "idle", f"等待输入 · {waited}"
+                return "idle", i18n.t(
+                    "detail_prev_duration",
+                    duration=fmt_duration(max(0.0, last.closed - last.opened)),
+                    age=waited,
+                )
+            return "idle", i18n.t("detail_waiting_age", age=waited)
         if compacting and compacting >= newest.ts:
-            return "compact", "压缩中"
+            return "compact", i18n.t("detail_compacting")
         if newest.kind == "compaction":
-            return "compact", "压缩中"
+            return "compact", i18n.t("detail_compacting")
 
         if stuck and stuck.status == "error":
-            return "error", f"{stuck.name} 失败"
+            return "error", i18n.t("detail_tool_failed", name=stuck.name)
         # The question tool sits pending→running until the user answers, so an
         # unfinished question part IS the ask — not a permission wait (those never
         # reach the database) and not "执行工具".
@@ -249,13 +254,15 @@ class _Fold:
             return "asking", f"{clip(stuck.label, 40)} ({fmt_age(now - newest.ts)})"
         if stuck and stuck.status == "pending" and now - newest.ts > _AWAIT_SECONDS:
             waited = fmt_age(now - newest.ts)
-            return "awaiting", f"{stuck.name}: {clip(stuck.label, 40)} 等待授权 ({waited})"
+            return "awaiting", i18n.t(
+                "detail_awaiting", name=stuck.name, label=clip(stuck.label, 40), age=waited
+            )
         if newest.kind in ("subtask", "branch"):
             count = sum(1 for r in records if r.seq > opened and r.kind in ("subtask", "branch"))
-            return "subagent", f"{count} 个子任务"
+            return "subagent", i18n.t("detail_subtasks", n=count)
         if stuck and stuck.status in ("pending", "running"):
             return "tool", f"{stuck.name}: {clip(stuck.label, 40)} ({fmt_age(now - newest.ts)})"
-        return "model", f"生成回复中 · {fmt_age(now - newest.ts)}"
+        return "model", i18n.t("detail_model", age=fmt_age(now - newest.ts))
 
 
 @dataclass
@@ -454,7 +461,7 @@ class OpencodeSource(AgentSource):
             # The parent's own stream ended at idle, but its subagents are still
             # working — that is "子代理运行中", not "空闲待输入".
             n = busy_children[key]
-            state, detail = "subagent", f"{n} 个子代理运行中"
+            state, detail = "subagent", i18n.t("detail_subagents", n=n)
 
         turn_count = conn.execute(_TURN_COUNT, (key,)).fetchone()[0]
         tasks_done, tasks_total, current_task = fold.tasks()
@@ -499,10 +506,10 @@ class OpencodeSource(AgentSource):
         return " · ".join(
             p
             for p in (
-                f"输入 {fmt_tokens(inp or 0)}",
-                f"输出 {fmt_tokens(outp or 0)}",
-                f"缓存 {fmt_tokens(cache)}" if cache else "",
-                f"成本 ${cost:.2f}" if cost else "",
+                i18n.t("usage_input", n=fmt_tokens(inp or 0)),
+                i18n.t("usage_output", n=fmt_tokens(outp or 0)),
+                i18n.t("usage_cache", n=fmt_tokens(cache)) if cache else "",
+                i18n.t("usage_cost", cost=cost) if cost else "",
             )
             if p
         )

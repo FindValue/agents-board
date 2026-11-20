@@ -22,7 +22,7 @@ import tkinter.font as tkfont
 
 import config
 import sources
-from core import winui
+from core import i18n, winui
 from core.state import AgentSession, clip, fmt_age, fmt_duration, state_color, state_label
 
 PANEL = "#0e1216"
@@ -135,7 +135,7 @@ class Card(tk.Frame):
         if tag:
             head = f"[{tag}] {head}"
         if not session.alive:
-            head += " 已退出"
+            head += i18n.t("card_exited")
         self.title.configure(
             text=self._fit("bold", head, row_px(card_w, "title")), fg=TEXT if session.alive else MUTED
         )
@@ -145,22 +145,25 @@ class Card(tk.Frame):
             text=self._fit("small", f"{trail} {span}".strip(), row_px(card_w, "meta")),
             fg=DIM if session.alive else MUTED,
         )
-        self.prompt.configure(text=self._fit("body", session.prompt or "(无提示词)", row_px(card_w, "prompt")))
+        self.prompt.configure(text=self._fit("body", session.prompt or i18n.t("no_prompt"), row_px(card_w, "prompt")))
 
         label = state_label(session.state)
         self.status.configure(
             text=self._fit("bold", f"{label} · {session.detail}" if session.detail else label, row_px(card_w, "status")),
             fg=state_color(session.state) if session.alive else MUTED,
         )
-        parts = [f"轮 {session.turns}", f"工具 {session.tool_calls}"]
+        parts = [
+            i18n.t("count_turn", n=session.turns),
+            i18n.t("count_tool", n=session.tool_calls),
+        ]
         if session.errors:
-            parts.append(f"错误 {session.errors}")
+            parts.append(i18n.t("count_error", n=session.errors))
         if session.usage:
             parts.append(session.usage)
         self.counts.configure(text=self._fit("mono", " · ".join(parts), row_px(card_w, "counts")))
 
         if session.tasks_total:
-            bar = f"任务 {session.tasks_done}/{session.tasks_total}"
+            bar = i18n.t("card_task", done=session.tasks_done, total=session.tasks_total)
             text = f"{bar} · {session.current_task}" if session.current_task else bar
             fg = TEXT if session.tasks_done == session.tasks_total else DIM
         elif session.activity:
@@ -246,10 +249,10 @@ class Board:
         self.panel.pack(fill="both", expand=True)
         self.header = tk.Frame(self.panel, bg=HEADER)
         self.header_title = tk.Label(
-            self.header, text="AGENT 看板", bg=HEADER, fg=DIM, font=self.fonts["bold"], anchor="w"
+            self.header, text=i18n.t("app_title"), bg=HEADER, fg=DIM, font=self.fonts["bold"], anchor="w"
         )
         self.header_hint = tk.Label(
-            self.header, text="右键 · 双击锁定 · 点卡片切窗口", bg=HEADER, fg=MUTED, font=self.fonts["small"]
+            self.header, text=i18n.t("header_hint"), bg=HEADER, fg=MUTED, font=self.fonts["small"]
         )
         self.body = tk.Frame(self.panel, bg=PANEL)
         self.footer = tk.Label(self.panel, text="", bg=PANEL, fg=MUTED, font=self.fonts["small"], anchor="w")
@@ -323,24 +326,24 @@ class Board:
             "jump": tk.BooleanVar(master=self.root, value=bool(self.settings["click_to_focus"])),
         }
         flags = (
-            ("pin", "永远置顶", self._apply_pin),
-            ("auto", "高度自适应", self._apply_auto),
-            ("dead", "保留刚退出的会话", self._apply_dead),
-            ("jump", "点击卡片切到它的窗口", self._apply_jump),
+            ("pin", "menu_pin"),
+            ("auto", "menu_auto"),
+            ("dead", "menu_dead"),
+            ("jump", "menu_jump"),
         )
         # 勾选态在深色菜单上是一块看不清的选中条：开关状态写在 accelerator 列的圆点里。
         # Tk 把 cascade 箭头也当 accelerator 计宽（tkWinMenu.c GetMenuAccelGeometry），
         # 两者同列起笔，activeborderwidth=0 时 accelerator 顶到条目右缘，圆点与箭头对齐。
         self._flag_entries = []
-        for key, label, apply in flags:
+        for key, label_key in flags:
             menu.add_checkbutton(
-                label=label,
+                label=i18n.t(label_key),
                 variable=self._vars[key],
                 indicatoron=False,
                 accelerator=self._dot(key),
                 command=lambda key=key: self._apply_flag(key),
             )
-            self._flag_entries.append((menu.index("end"), key, label))
+            self._flag_entries.append((menu.index("end"), key))
         opacity = tk.Menu(
             menu, tearoff=0, bg=PANEL, fg=TEXT, activebackground=HEADER, activeforeground=TEXT,
             activeborderwidth=0,
@@ -354,14 +357,29 @@ class Board:
                 accelerator=self._preset_dot(preset),
                 command=self._apply_idle,
             )
-        menu.add_cascade(label="常态透明度", menu=opacity)
+        menu.add_cascade(label=i18n.t("menu_opacity"), menu=opacity)
         self._opacity = opacity
+        lang_menu = tk.Menu(
+            menu, tearoff=0, bg=PANEL, fg=TEXT, activebackground=HEADER, activeforeground=TEXT,
+            activeborderwidth=0,
+        )
+        self._lang_var = tk.StringVar(master=self.root, value=i18n.configured())
+        for code in i18n.CHOICES:
+            lang_menu.add_radiobutton(
+                label=i18n.choice_label(code),
+                value=code,
+                variable=self._lang_var,
+                indicatoron=False,
+                accelerator=self._lang_dot(code),
+                command=lambda code=code: self._apply_lang(code),
+            )
+        menu.add_cascade(label=i18n.t("menu_language"), menu=lang_menu)
         menu.add_separator()
-        menu.add_command(label="立即刷新", command=self._poll)
-        menu.add_command(label="复制最上方会话目录", command=self._copy_cwd)
+        menu.add_command(label=i18n.t("menu_refresh"), command=self._poll)
+        menu.add_command(label=i18n.t("menu_copy_cwd"), command=self._copy_cwd)
         menu.add_separator()
-        menu.add_command(label="重启看板", command=self._restart)
-        menu.add_command(label="退出", command=self.root.destroy)
+        menu.add_command(label=i18n.t("menu_restart"), command=self._restart)
+        menu.add_command(label=i18n.t("menu_quit"), command=self.root.destroy)
         self.menu = menu
 
     def _menu_popup(self, event) -> None:
@@ -395,16 +413,29 @@ class Board:
         self._refresh_flags()
 
     def _refresh_flags(self) -> None:
-        for idx, key, _label in self._flag_entries:
+        for idx, key in self._flag_entries:
             self.menu.entryconfigure(idx, accelerator=self._dot(key))
 
     def _dot(self, key: str) -> str:
         return "●" if self._vars[key].get() else "○"
 
+    def _lang_dot(self, code: str) -> str:
+        return "●" if i18n.configured() == code else "○"
+
+    def _apply_lang(self, code: str) -> None:
+        i18n.configure(code)
+        self._build_menu()
+        self.header_title.configure(text=i18n.t("app_title"))
+        self.header_hint.configure(text=self._hint())
+        self._poll()
+
+    def _hint(self) -> str:
+        return i18n.t("header_locked") if self._locked else i18n.t("header_hint")
+
     def _toggle_lock(self, event=None) -> str:
         self._locked = not self._locked
         self.header_hint.configure(
-            text="已锁定" if self._locked else "右键 · 双击锁定 · 点卡片切窗口", fg=WARN if self._locked else MUTED
+            text=self._hint(), fg=WARN if self._locked else MUTED
         )
         return "break"
 
@@ -414,14 +445,14 @@ class Board:
         name = session.project or session.key
         action = winui.focus_process(session.pid, session.key)
         if action == "raised":
-            self._note(f"已切到 {name}")
+            self._note(i18n.t("note_raised", name=name))
         elif action == "back":
-            self._note("已切回上一个窗口")
+            self._note(i18n.t("note_back"))
         elif action == "tab":
-            self._note(f"{name}：窗口已置前，但它显示的是别的标签页")
+            self._note(i18n.t("note_tab", name=name))
         else:
             self.root.bell()
-            self._note(f"{name}: 找不到它的窗口（终端已分离？）")
+            self._note(i18n.t("note_no_window", name=name))
 
     def _note(self, text: str) -> None:
         """A click's answer has to outlive the next poll, or it is never readable."""
@@ -433,7 +464,7 @@ class Board:
             if session.cwd:
                 self.root.clipboard_clear()
                 self.root.clipboard_append(session.cwd)
-                self._note(f"已复制 {session.cwd}")
+                self._note(i18n.t("note_copied", path=session.cwd))
                 return
         self.root.bell()
 
@@ -572,12 +603,12 @@ class Board:
             elif card.needs_attention:
                 card.paint_dot(state_color(session.state), dim=not self._blink)
 
-        text = f"{len(self.sessions)} 会话 · {self._scan_ms:.0f}ms"
+        text = i18n.t("footer_sessions", n=len(self.sessions), ms=self._scan_ms)
         hidden = len(self.sessions) - len(shown)
         if hidden > 0:
-            text += f" · 另有 {hidden} 未显示"
+            text += i18n.t("footer_hidden", n=hidden)
         if sources.ERRORS:
-            text = "适配器故障 " + " ".join(f"{k}:{v}" for k, v in sources.ERRORS.items())
+            text = i18n.t("footer_adapter_error") + " ".join(f"{k}:{v}" for k, v in sources.ERRORS.items())
             self.footer.configure(fg=WARN)
         else:
             self.footer.configure(fg=MUTED)
@@ -598,21 +629,28 @@ class Board:
 def render_text(sessions: list[AgentSession]) -> str:
     lines = []
     for s in sessions:
-        alive = "" if s.alive else " (已退出)"
-        lines.append(f"[{state_label(s.state)}] {s.project} pid={s.pid}{alive} 运行={fmt_duration(s.uptime())}")
+        alive = "" if s.alive else i18n.t("text_exited")
+        lines.append(
+            f"[{state_label(s.state)}] {s.project} pid={s.pid}{alive}"
+            f"{i18n.t('text_uptime')}{fmt_duration(s.uptime())}"
+        )
         if s.prompt:
-            lines.append(f"    请求: {s.prompt}")
+            lines.append(i18n.t("text_request") + s.prompt)
         lines.append(f"    {s.detail}")
         if s.tasks_total:
-            lines.append(f"    任务 {s.tasks_done}/{s.tasks_total} {s.current_task}")
+            lines.append(i18n.t("text_task") + f"{s.tasks_done}/{s.tasks_total} {s.current_task}")
         tail = f" {s.usage}" if s.usage else ""
-        lines.append(f"    轮 {s.turns} 工具 {s.tool_calls} 错误 {s.errors}{tail} 分支={s.branch or '-'} 模型={s.model or '-'}")
+        lines.append(
+            i18n.t("text_counts", turns=s.turns, tools=s.tool_calls, errors=s.errors)
+            + tail + i18n.t("text_branch") + (s.branch or "-")
+            + i18n.t("text_model") + (s.model or "-")
+        )
         for act in s.activity:
             lines.append(f"      {act}")
     if not sessions:
-        lines.append("没有正在运行的 agent 会话")
+        lines.append(i18n.t("text_no_sessions"))
     if sources.ERRORS:
-        lines.append("适配器故障: " + " ".join(f"{k}={v}" for k, v in sources.ERRORS.items()))
+        lines.append(i18n.t("text_adapter_error") + " ".join(f"{k}={v}" for k, v in sources.ERRORS.items()))
     return "\n".join(lines)
 
 
@@ -624,19 +662,19 @@ def _utf8_stdout() -> None:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="置顶透明的 agent CLI 处理进展看板")
-    parser.add_argument("--once", action="store_true", help="打印一次看板内容，不开窗口")
-    parser.add_argument("--repeat", action="store_true", help="配合 --once 持续打印")
-    parser.add_argument("--interval-ms", type=int, dest="interval", help="覆盖刷新间隔")
+    settings = config.load()
+    i18n.init()
+    parser = argparse.ArgumentParser(description=i18n.t("cli_desc"))
+    parser.add_argument("--once", action="store_true", help=i18n.t("cli_once"))
+    parser.add_argument("--repeat", action="store_true", help=i18n.t("cli_repeat"))
+    parser.add_argument("--interval-ms", type=int, dest="interval", help=i18n.t("cli_interval"))
     parser.add_argument(
         "--home",
         action="append",
         default=[],
-        help="额外的 agent home，对所有适配器生效（不是它的目录会被自己的 marker 挡掉）",
+        help=i18n.t("cli_home"),
     )
     args = parser.parse_args(argv)
-
-    settings = config.load()
     if args.interval:
         settings["poll_interval_ms"] = args.interval
     if args.home:

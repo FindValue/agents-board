@@ -10,6 +10,9 @@ CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 GEOMETRY_PATH = os.path.join(APP_DIR, "geometry.json")
 
 DEFAULTS: dict = {
+    # UI language: "auto" follows the system display language (English when unknown),
+    # or force "zh-CN" / "en". The menu can change it at runtime.
+    "language": "auto",
     # Extra qoder homes to scan first; empty means auto-detect ~/.qoder-cn and ~/.qoder
     "qoder_homes": [],
     # Extra Copilot homes to scan first; empty means auto-detect ~/.copilot

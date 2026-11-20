@@ -22,6 +22,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 import config
+from core import i18n
 from core.fs import dirs, homes, project_name
 from core.jsonl import JsonlTailer
 from core.pid import Liveness
@@ -162,12 +163,12 @@ class EventStream:
         elif kind == "assistant.turn_end":
             steps = self.turn_tools
             span = fmt_duration(max(0.0, ts - self.turn_open)) if self.turn_open else ""
-            out = f" / 输出 {fmt_tokens(self.turn_out)}" if self.turn_out else ""
+            out = i18n.t("turn_out", n=fmt_tokens(self.turn_out)) if self.turn_out else ""
             self.turn_open = 0.0
             self.pend_tools.clear()
             self.pend_perm.clear()
             self.hooks = 0
-            self.turn_stats = f"{steps} 工具 / {span}{out}"
+            self.turn_stats = i18n.t("turn_stats_tools", steps=steps, span=span) + out
         elif kind == "tool.execution_start":
             call_id = str(data.get("toolCallId") or "")
             name = data.get("toolName") or "tool"
@@ -187,7 +188,7 @@ class EventStream:
             name = entry.get("name") or data.get("toolName") or "tool"
             if data.get("success") is False:
                 self.errors += 1
-                self.activity.append(f"{hms(ts)} {name} 失败")
+                self.activity.append(f"{hms(ts)} {name} {i18n.t('act_failed')}")
             else:
                 self.activity.append(f"{hms(ts)} {name} ok")
         elif kind == "permission.requested":
@@ -204,7 +205,7 @@ class EventStream:
             entry = self.pend_perm.pop(str(data.get("requestId") or ""), None) or {}
             result = str((data.get("result") or {}).get("kind") or "")
             if result.startswith(("deny", "reject")):
-                self.activity.append(f"{hms(ts)} 拒绝 {clip(entry.get('ask') or result, 24)}")
+                self.activity.append(f"{hms(ts)} {i18n.t('act_denied', name=clip(entry.get('ask') or result, 24))}")
         elif kind == "external_tool.requested":
             key = str(data.get("requestId") or data.get("toolCallId") or "")
             if not key:
@@ -220,7 +221,7 @@ class EventStream:
         elif kind == "hook.start":
             self.hooks += 1
             if data.get("hookType") == "errorOccurred":
-                self.turn_failure = "上一轮异常终止"
+                self.turn_failure = i18n.t("turn_failure_aborted")
         elif kind == "hook.end":
             self.hooks = max(0, self.hooks - 1)
         elif kind == "session.compaction_start":
@@ -231,12 +232,12 @@ class EventStream:
             self.compacting = False
             if data.get("success") is False:
                 self.errors += 1
-                self.turn_failure = "上下文压缩失败"
+                self.turn_failure = i18n.t("turn_failure_compact")
         elif kind == "system.notification":
             info = data.get("kind") if isinstance(data.get("kind"), dict) else {}
             if info.get("type") == "shell_completed":
                 code = info.get("exitCode")
-                self.activity.append(f"{hms(ts)} 后台命令 {'ok' if code == 0 else f'exit {code}'}")
+                self.activity.append(f"{hms(ts)} {i18n.t('act_background', mark=('ok' if code == 0 else f'exit {code}'))}")
 
     def context_pct(self) -> str:
         if not (self.ctx_used and self.ctx_limit):
@@ -249,22 +250,22 @@ class EventStream:
             waited = fmt_age(now - oldest["ts"])
             return "awaiting", f"{oldest['name']}: {clip(oldest['ask'], 40)} ({waited})"
         if self.compacting:
-            return "compact", "压缩中"
+            return "compact", i18n.t("detail_compacting")
         if self.pend_tools:
             newest = max(self.pend_tools.values(), key=lambda e: e["ts"])
             running = fmt_age(now - newest["ts"])
             return "tool", f"{newest['name']}: {clip(newest['label'], 40)} ({running})"
         if self.turn_open:
-            return "model", f"第 {self.turns} 轮请求中 · {fmt_age(now - self.turn_open)}"
+            return "model", i18n.t("detail_model_turn", n=self.turns, age=fmt_age(now - self.turn_open))
         if self.hooks:
-            return "hook", f"{self.hooks} 个钩子运行中"
+            return "hook", i18n.t("detail_hooks", n=self.hooks)
         if self.turn_failure:
             return "error", clip(self.turn_failure, 44)
         if self.turn_stats:
-            return "idle", f"上轮 {self.turn_stats} · {fmt_age(now - self.last_ts)}"
+            return "idle", i18n.t("detail_prev", stats=self.turn_stats, age=fmt_age(now - self.last_ts))
         if self.prompt or self.turns:
-            return "idle", "等待输入"
-        return "starting", "初始化中"
+            return "idle", i18n.t("detail_waiting")
+        return "starting", i18n.t("detail_starting")
 
     def has_progress(self) -> bool:
         return bool(self.turns or self.prompt or self.turn_stats or self.pend_tools or self.pend_perm)
@@ -410,7 +411,10 @@ class VscodeAgentSource(AgentSource):
         credits = self._credits(session, st)
         context = stream.context_pct()
         return " · ".join(
-            p for p in (f"额度 {credits:g}" if credits else "", f"上下文 {context}" if context else "") if p
+            p for p in (
+                i18n.t("usage_credits", n=f"{credits:g}") if credits else "",
+                i18n.t("usage_context", n=context) if context else "",
+            ) if p
         )
 
     def _snapshot(self, session: Session, now: float, st: _State) -> AgentSession | None:
@@ -440,7 +444,7 @@ class VscodeAgentSource(AgentSource):
         return AgentSession(
             source=self.id,
             key=session.key,
-            project=project_name(session.cwd, f"会话 {session.key[:8]}"),
+            project=project_name(session.cwd, i18n.t("fallback_project", key=session.key[:8])),
             cwd=session.cwd,
             pid=session.pid,
             alive=session.alive,

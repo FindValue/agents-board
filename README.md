@@ -48,8 +48,10 @@ python board.py --once --home <dir>
 - Click a card to bring the terminal / editor hosting that session to the front; click the same card again to return to the previous window
 - Right-click menu:
   - Always on top, auto height, keep recently exited sessions, click card to focus its window
-  - Idle-opacity presets
+  - Idle-opacity presets, Language (Auto / 简体中文 / English)
   - Refresh now, copy top session's directory, restart board, quit
+
+The UI starts in the system display language (English if it can't be detected) and can be switched at any time from the menu; the choice is saved to `config.json`.
 
 Cards are sorted by "needs your attention" first, then by most recent activity. States that need you (waiting for your answer, awaiting authorization, last turn failed) blink.
 
@@ -88,6 +90,7 @@ All tunables live in `config.json`; deleting a key restores the default in `conf
 | `idle_presets` | `[0.22, 0.38, 0.55, 0.75]` | Opacity presets in the right-click menu |
 | `topmost` | `true` | Always on top |
 | `click_to_focus` | `true` | Click a card to focus its window |
+| `language` | `auto` | UI language: `auto` follows the system display language (English if undetectable), or force `zh-CN` / `en`. The right-click menu can switch it live. |
 | `width` / `height` | `360` / `340` | Window size in design pixels (DPI-adjusted automatically) |
 | `min_width` / `min_height` | `300` / `170` | Minimum size when resizing |
 | `margin_right` / `margin_top` | `24` / `48` | Distance from screen edges |
@@ -101,6 +104,7 @@ Architecture boundaries, hard constraints, known pitfalls, and verification step
 - Data flows one way: `sources.scan_all() → list[AgentSession] → Board._render()`. The UI knows nothing about CLI-specific fields, and adapters know nothing about tkinter.
 - To add a CLI: create `sources/xxx.py` implementing `id / label / scan(cache)`, then register one line in `SOURCES` in `sources/__init__.py`. No changes needed in `board.py`, `config.py`, or `core/state.py`. Name the home config key `<source>_homes`; `--home` and `config.load()` pick it up automatically.
 - The state vocabulary lives only in `core/state.STATE_META`; text clipping and time / token formatting live only in `core/state.py`.
+- UI strings are one file per language under `core/locales/<code>.json` (e.g. `zh-CN.json`, `en.json`); adding a language means adding a JSON file with the same keys, then registering it in `core/i18n.py`'s `CHOICES` / `_LABELS`.
 
 Verification:
 

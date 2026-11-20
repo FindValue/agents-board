@@ -48,8 +48,10 @@ python board.py --once --home <dir>
 - 点卡片：把承载该会话的终端 / 编辑器窗口切到前台；再点同一张卡片回到上一个窗口
 - 右键菜单：
   - 永远置顶、高度自适应、保留刚退出的会话、点击卡片切到它的窗口
-  - 常态透明度档位
+  - 常态透明度档位、语言（自动 / 简体中文 / English）
   - 立即刷新、复制最上方会话目录、重启看板、退出
+
+界面启动时会采用系统显示语言（检测不到则用英文），可随时在菜单里切换，选择会保存到 `config.json`。
 
 卡片按「需要你处理」优先、其次最近活动排序。需要用户介入的状态（等你回答、等待你授权、上一轮异常）会闪烁提示。
 
@@ -88,6 +90,7 @@ python board.py --once --home <dir>
 | `idle_presets` | `[0.22, 0.38, 0.55, 0.75]` | 右键菜单里的透明度档位 |
 | `topmost` | `true` | 永远置顶 |
 | `click_to_focus` | `true` | 点卡片切到它的窗口 |
+| `language` | `auto` | 界面语言：`auto` 跟随系统显示语言（检测不到则用英文），或强制 `zh-CN` / `en`。右键菜单可实时切换。 |
 | `width` / `height` | `360` / `340` | 窗口尺寸（设计像素，自动换算 DPI） |
 | `min_width` / `min_height` | `300` / `170` | 缩放下限 |
 | `margin_right` / `margin_top` | `24` / `48` | 距离屏幕边缘的间距 |
@@ -101,6 +104,7 @@ python board.py --once --home <dir>
 - 数据流单向：`sources.scan_all() → list[AgentSession] → Board._render()`。UI 不认识任何 CLI 特有字段，适配器不认识 tkinter。
 - 加一个 CLI：新增 `sources/xxx.py`，实现 `id / label / scan(cache)`，再到 `sources/__init__.py` 的 `SOURCES` 注册一行。不需要改 `board.py`、`config.py` 或 `core/state.py`。home 配置键命名为 `<source>_homes`，`--home` 和 `config.load()` 会自动生效。
 - 状态词汇表只在 `core/state.STATE_META`；文本截断和时间 / 用量格式化只在 `core/state.py`。
+- 界面文案每种语言一个文件，放在 `core/locales/<语言>.json`（如 `zh-CN.json`、`en.json`）；加语言就是加一个同 key 的 JSON 文件，再在 `core/i18n.py` 的 `CHOICES` / `_LABELS` 注册。
 
 验证：
 

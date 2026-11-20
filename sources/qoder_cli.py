@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 import config
+from core import i18n
 from core.fs import dirs, homes, project_name
 from core.jsonl import JsonlTailer
 from core.pid import Liveness
@@ -43,7 +44,11 @@ _TASK_CREATED = re.compile(r"Task #(\d+) created successfully:?\s*(.*)")
 _PROMPT_NOISE = re.compile(r"^<(local-command-caveat|command-message|command-name|system-reminder)")
 _HOME_DIRS = (".qoder-cn", ".qoder")
 _SESSIONS_DIR = os.path.join("logs", "sessions")
-_COMPACT_LABEL = {"starting": "准备压缩", "summarizing": "摘要中", "post_processing": "收尾中"}
+_COMPACT_LABEL = {
+    "starting": "compact_starting",
+    "summarizing": "compact_summarizing",
+    "post_processing": "compact_post_processing",
+}
 
 
 def _prompt_text(rec: dict) -> str:
@@ -138,7 +143,7 @@ class SegmentStream:
         elif kind == "model.request.attempt_failed":
             self.errors += 1
             self.retry = (int(data.get("attempt") or 1), int(data.get("max_attempts") or 1))
-            self.last_error = clip(data.get("error_message") or "模型请求失败", 70)
+            self.last_error = clip(data.get("error_message") or i18n.t("model_request_failed"), 70)
         elif kind == "tool.requested":
             name = data.get("tool_name") or "tool"
             if tcid:
@@ -162,19 +167,21 @@ class SegmentStream:
         elif kind == "permission.resolved":
             entry = self.pend_perm.pop(tcid, None)
             if data.get("decision_behavior") == "deny":
-                self.activity.append(f"{hms(ts)} 拒绝 {data.get('tool_name') or (entry or {}).get('name', '')}")
+                self.activity.append(
+                    f"{hms(ts)} {i18n.t('act_denied', name=data.get('tool_name') or (entry or {}).get('name', ''))}"
+                )
         elif kind == "tool.shell.started":
             entry = self.pend_tools.get(tcid)
             if entry:
                 entry["label"] = first_line(data.get("command") or entry["label"])
         elif kind == "tool.shell.backgrounded":
-            self.activity.append(f"{hms(ts)} 转后台 pid={data.get('pid')}")
+            self.activity.append(f"{hms(ts)} {i18n.t('act_backgrounded', pid=data.get('pid'))}")
         elif kind == "tool.shell.finished":
             entry = self.pend_tools.get(tcid) or {}
             code = data.get("exit_code")
             mark = "ok" if code == 0 else f"exit {code}"
             if data.get("aborted"):
-                mark = "中断"
+                mark = i18n.t("act_aborted")
             self.activity.append(f"{hms(ts)} {entry.get('name', 'shell')} {mark}")
         elif kind == "tool.execution.finished":
             entry = self.pend_tools.pop(tcid, None) or {}
@@ -183,9 +190,9 @@ class SegmentStream:
             name = entry.get("name") or data.get("tool_name") or "tool"
             if status == "error":
                 self.errors += 1
-                self.activity.append(f"{hms(ts)} {name} 失败")
+                self.activity.append(f"{hms(ts)} {name} {i18n.t('act_failed')}")
             elif status == "denied":
-                self.activity.append(f"{hms(ts)} {name} 被拒")
+                self.activity.append(f"{hms(ts)} {i18n.t('act_tool_denied', name=name)}")
             elif "shell" not in (self.activity[-1] if self.activity else ""):
                 self.activity.append(f"{hms(ts)} {name} ok")
         elif kind == "fork.agent.started":
@@ -219,11 +226,11 @@ class SegmentStream:
             self.hooks = 0
             steps = data.get("num_turns") or self.turns
             dur = fmt_duration((data.get("duration_ms") or 0) / 1000.0)
-            self.turn_stats = f"{steps} 步 / {dur}"
+            self.turn_stats = i18n.t("turn_stats_steps", steps=steps, duration=dur)
             if reason == "abort":
-                self.turn_failure = "本轮被中断"
+                self.turn_failure = i18n.t("turn_failure_interrupted")
             elif reason == "error" or level == "error":
-                self.turn_failure = f"本轮异常终止({reason})"
+                self.turn_failure = i18n.t("turn_failure_error", reason=reason)
         elif kind == "loop.iteration.finished":
             if data.get("error_tool_result_count"):
                 self.errors += int(data["error_tool_result_count"])
@@ -238,29 +245,29 @@ class SegmentStream:
             waited = fmt_age(now - oldest["ts"])
             return "awaiting", f"{oldest['name']}: {clip(oldest['ask'], 40)} ({waited})"
         if self.compact_stage:
-            return "compact", _COMPACT_LABEL.get(self.compact_stage, self.compact_stage)
+            return "compact", i18n.t(_COMPACT_LABEL.get(self.compact_stage, self.compact_stage))
         if self.pend_fork:
             labels = "/".join(sorted(self.pend_fork))
-            return "subagent", f"{len(self.pend_fork)} 个 fork: {clip(labels, 30)}"
+            return "subagent", i18n.t("detail_forks", n=len(self.pend_fork), labels=clip(labels, 30))
         if self.pend_tools:
             newest = max(self.pend_tools.values(), key=lambda e: e["ts"])
             running = fmt_age(now - newest["ts"])
             return "tool", f"{newest['name']}: {clip(newest['label'], 40)} ({running})"
         if self.request:
             index, started = self.request
-            extra = f" 重试 {self.retry[0]}/{self.retry[1]}" if self.retry else ""
-            return "model", f"第 {index} 次请求{extra} · {fmt_age(now - started)}"
+            extra = i18n.t("detail_retry", a=self.retry[0], b=self.retry[1]) if self.retry else ""
+            return "model", i18n.t("detail_model_request", n=index, extra=extra, age=fmt_age(now - started))
         if self.hooks:
-            return "hook", f"{self.hooks} 个钩子运行中"
+            return "hook", i18n.t("detail_hooks", n=self.hooks)
         if self.turn_failure:
             return "error", clip(self.turn_failure, 44)
         if self.turn_stats:
-            return "idle", f"上轮 {self.turn_stats} · {fmt_age(now - self.last_ts)}"
+            return "idle", i18n.t("detail_prev", stats=self.turn_stats, age=fmt_age(now - self.last_ts))
         if self.last_error and now - self.last_ts < 120:
             return "error", self.last_error
         if self.prompt or self.turns:
-            return "idle", "等待输入"
-        return "starting", "初始化中"
+            return "idle", i18n.t("detail_waiting")
+        return "starting", i18n.t("detail_starting")
 
     def has_progress(self) -> bool:
         return bool(self.turns or self.prompt or self.turn_stats or self.pend_tools or self.pend_perm)
@@ -307,7 +314,7 @@ class TranscriptFeed:
             tid = str(inp.get("taskId") or inp.get("task_id") or "")
             status = inp.get("status")
             if tid and status:
-                self.tasks.setdefault(tid, [f"任务 #{tid}", "pending"])[1] = status
+                self.tasks.setdefault(tid, [i18n.t("task_fallback", tid=tid), "pending"])[1] = status
         elif name == "TodoWrite":
             todos = inp.get("todos")
             if isinstance(todos, list):
@@ -330,7 +337,7 @@ class TranscriptFeed:
         if not match:
             return
         tid, subject = match.group(1), match.group(2).strip().rstrip('"]')
-        self.tasks[tid] = [subject or fallback or f"任务 #{tid}", "pending"]
+        self.tasks[tid] = [subject or fallback or i18n.t("task_fallback", tid=tid), "pending"]
 
     def progress(self) -> tuple[int, int, str]:
         done = sum(1 for v in self.tasks.values() if v[1] == "completed")
@@ -342,7 +349,7 @@ class TranscriptFeed:
         if not current and self.tasks:
             for tid, (subject, status) in self.tasks.items():
                 if status == "pending":
-                    current = f"(下一个) #{tid} {subject}"
+                    current = i18n.t("task_next", tid=tid, subject=subject)
                     break
         return done, len(self.tasks), current
 
