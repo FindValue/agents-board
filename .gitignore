@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+
+# 运行时生成，每个人本地不同
+geometry.json
+config.json
+
+# 本地调试产物
+shot.ps1
+tmp_*.png
+
+# 编辑器本地设置
+.qoder/
