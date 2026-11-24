@@ -10,7 +10,7 @@ Built on the Python standard library only — zero dependencies, no network, no 
 
 | Source | Data source |
 | --- | --- |
-| qodercli | jsonl logs under `~/.qoder-cn` / `~/.qoder` |
+| qodercli (incl. Qoder CN desktop) | jsonl logs under `~/.qoder-cn` / `~/.qoder` (desktop sessions share the same layout) |
 | VS Code Copilot | `events.jsonl` + `workspace.yaml` in `~/.copilot/session-state` |
 | opencode | `~/.local/share/opencode/opencode.db` (read-only SQLite) |
 
@@ -84,6 +84,7 @@ All tunables live in `config.json`; deleting a key restores the default in `conf
 | `full_read_kb` | `8192` | Logs smaller than this are read from the top on first look, so nothing at the start is missed |
 | `max_cards` | `5` | Maximum number of cards shown |
 | `live_minutes` | `30` | Without an execution claim, a session still counts as live for this long |
+| `max_claim_minutes` | `120` | How long a stale opencode execution claim still counts as live |
 | `max_idle_minutes` | `360` | Silence after which a session leaves the board |
 | `include_recent_dead` / `recent_dead_minutes` | `true` / `10` | Whether to keep recently exited sessions |
 | `alpha_idle` / `alpha_hover` | `0.38` / `1.0` | Idle / hover opacity |

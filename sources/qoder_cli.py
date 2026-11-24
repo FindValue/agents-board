@@ -8,6 +8,10 @@ Layout under the qoder home (~/.qoder-cn by default):
 
 The run id ends in ``-p<pid>``, so process liveness is the gate for "currently
 open". Events are the source of truth for what the session is doing right now.
+
+The Qoder CN desktop worker (``--sdk``) writes the same layout, but one run id is
+shared by every open conversation and the manifest cwd is the app install dir; there
+each session directory is its own card and its log mtime says which ones are current.
 """
 
 from __future__ import annotations
@@ -88,6 +92,7 @@ class Run:
     cwd: str = ""
     model: str = ""
     started_at: float = 0.0
+    sdk: bool = False
 
 
 class SegmentStream:
@@ -107,9 +112,11 @@ class SegmentStream:
         self.errors = 0
         self.prompt = ""
         self.model = ""
+        self.cwd = ""
         self.transcript = ""
         self.last_ts = 0.0
         self.last_type = ""
+        self.in_turn = False
         self.turn_failure = ""
         self.last_error = ""
         self.turn_stats = ""
@@ -130,11 +137,16 @@ class SegmentStream:
             self.model = data.get("model") or self.model
         elif kind == "input.prompt.received":
             self.prompt = data.get("text_preview") or ""
+            self.turn_stats = ""
+            self.turn_failure = ""
+            self.in_turn = True
         elif kind == "turn.started":
             self.turns += 1
             self.model = data.get("model") or self.model
             self.turn_failure = ""
+            self.turn_stats = ""
             self.retry = None
+            self.in_turn = True
         elif kind == "model.request.started":
             self.request = (int(data.get("request_index") or 1), ts)
         elif kind == "model.response.completed":
@@ -207,6 +219,11 @@ class SegmentStream:
             self.compact_stage = None if stage in ("done", "failed") else stage
         elif kind == "hook.started":
             self.hooks += 1
+            # The desktop worker's manifest cwd is the app install dir; hook_input is
+            # the one place its real workspace path is written down.
+            hook_input = data.get("hook_input") if isinstance(data.get("hook_input"), dict) else {}
+            if isinstance(hook_input.get("cwd"), str) and hook_input["cwd"]:
+                self.cwd = hook_input["cwd"]
         elif kind == "hook.finished":
             self.hooks = max(0, self.hooks - 1)
         elif kind == "input.slash_command.started":
@@ -218,6 +235,7 @@ class SegmentStream:
                     self.transcript = path
         elif kind == "turn.finished":
             reason = data.get("reason") or "end_turn"
+            self.in_turn = False
             self.request = None
             self.pend_tools.clear()
             self.pend_perm.clear()
@@ -261,6 +279,10 @@ class SegmentStream:
             return "hook", i18n.t("detail_hooks", n=self.hooks)
         if self.turn_failure:
             return "error", clip(self.turn_failure, 44)
+        # A turn can be quiet between events; the last turn's stats must not make an
+        # in-flight request read as "waiting for input".
+        if self.in_turn and (self.prompt or self.turns):
+            return "model", i18n.t("detail_model", age=fmt_age(now - self.last_ts))
         if self.turn_stats:
             return "idle", i18n.t("detail_prev", stats=self.turn_stats, age=fmt_age(now - self.last_ts))
         if self.last_error and now - self.last_ts < 120:
@@ -407,11 +429,17 @@ class QoderCliSource(AgentSource):
                     if not match:
                         continue
                     pid = int(match.group(1))
-                    alive = st.liveness.check(pid, now)
-                    if dropped(age, alive):
-                        continue
                     meta = self._manifest(home, run_id, st)
-                    if "--sdk" in (meta.get("argv") or []):
+                    sdk = "--sdk" in (meta.get("argv") or [])
+                    if sdk:
+                        # One desktop worker owns every open conversation, so its pid alone
+                        # cannot say which ones are still on screen; each log's own mtime can.
+                        alive = st.liveness.check(pid, now) and age < config.settings["live_minutes"] * 60
+                        cwd = ""
+                    else:
+                        alive = st.liveness.check(pid, now)
+                        cwd = meta.get("cwd") or ""
+                    if dropped(age, alive):
                         continue
                     runs.append(
                         Run(
@@ -423,9 +451,10 @@ class QoderCliSource(AgentSource):
                             mtime=mtime,
                             alive=alive,
                             size=size,
-                            cwd=meta.get("cwd") or "",
+                            cwd=cwd,
                             model=meta.get("model") or "",
                             started_at=parse_ts(meta.get("started_at")) or _run_start(run_id),
+                            sdk=sdk,
                         )
                     )
         runs.sort(key=lambda r: r.mtime, reverse=True)
@@ -496,9 +525,14 @@ class QoderCliSource(AgentSource):
             stream.feed(records)
         if not run.alive and not stream.has_progress():
             return None
+        # The worker also writes title-generation and hook-only slices; neither is a
+        # conversation worth a card.
+        if run.sdk and (not stream.has_progress() or stream.prompt.startswith("Session title:")):
+            return None
 
+        cwd = stream.cwd or run.cwd
         project = project_name(
-            run.cwd, run.project_id.replace("--", "\\").split("\\")[-1] or run.project_id
+            cwd, run.project_id.replace("--", "\\").split("\\")[-1] or run.project_id
         )
         feed = self._transcript(stream, st, tail_bytes)
 
@@ -512,7 +546,7 @@ class QoderCliSource(AgentSource):
             source=self.id,
             key=run.key,
             project=project,
-            cwd=run.cwd,
+            cwd=cwd,
             pid=run.pid,
             alive=run.alive,
             model=stream.model or run.model,

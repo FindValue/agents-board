@@ -10,7 +10,7 @@
 
 | 来源 | 数据来源 |
 | --- | --- |
-| qodercli | `~/.qoder-cn` / `~/.qoder` 下的 jsonl 日志 |
+| qodercli（含 Qoder CN 桌面版） | `~/.qoder-cn` / `~/.qoder` 下的 jsonl 日志（桌面版共用同一套布局） |
 | VS Code Copilot | `~/.copilot/session-state` 的 `events.jsonl` + `workspace.yaml` |
 | opencode | `~/.local/share/opencode/opencode.db`（只读 SQLite） |
 
@@ -84,6 +84,7 @@ python board.py --once --home <dir>
 | `full_read_kb` | `8192` | 小于该尺寸的日志首次从头读，避免丢掉开头 |
 | `max_cards` | `5` | 最多显示几张卡片 |
 | `live_minutes` | `30` | 无执行标记时，会话在这段时间内仍算活跃 |
+| `max_claim_minutes` | `120` | opencode 的执行标记陈旧多久后不再算活跃 |
 | `max_idle_minutes` | `360` | 多久无活动就移出看板 |
 | `include_recent_dead` / `recent_dead_minutes` | `true` / `10` | 是否保留刚退出的会话 |
 | `alpha_idle` / `alpha_hover` | `0.38` / `1.0` | 常态 / 悬停透明度 |

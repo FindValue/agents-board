@@ -80,10 +80,18 @@ UI 不认识任何 CLI 特有的字段；适配器不认识 tkinter。
 - 清单属于创建它的那次请求：全部 `completed` 后再来一条真实 user prompt 就清空（`_prompt_text` 过滤
   `<local-command-caveat>` / `<command-message>` 这类注入噪声）。否则上一件事的 "任务 4/4" 会一直挂在卡片上，
   而当前请求根本没建过任务。还有 pending 的不清，允许跨请求续用。
-- **Qoder CN 桌面版把 CLI 当 `--sdk` worker 拉起**：一次启动会在同一个 run 下建出好几个 session 目录，每个只分到一段
-  日志切片（seq 不从 1 开始，只有其中一份含 `session.config.loaded` 的 `interactive:false`），所以按 `interactive` 过滤
-  挡不住全部，会在看板上刷出四五张空卡。要在 manifest 的 `argv` 里认 `--sdk`（run 级，这些目录共用一份 manifest，
-  `_manifest` 已经读过了）；它们还共用同一个 run_id，`cwd` 是 `D:\Program Files\Qoder CN` 这种安装目录。
+- **Qoder CN 桌面版把 CLI 当 `--sdk` worker 拉起**：一次启动的所有会话共用**同一个 run_id**（manifest 在 run 级，
+  `_manifest` 已经读过），每个会话目录只分到一段日志切片（seq 不从 1 开始，只有一份含 `session.config.loaded`
+  的 `interactive:false`），且 manifest 的 `cwd` 是 `D:\Program Files\Qoder CN` 这种安装目录。按 `interactive` 过滤
+  挡不住全部，照单全收又会刷出四五张空卡。现在靠 `argv` 里的 `--sdk` 分流：**每个 session 目录出一张卡**，
+  真实 cwd 只从 `hook.started` 的 `hook_input.cwd` 取（`workspace_dirs` 同值），别去解码 project_id —— `--`
+  不是单纯的路径分隔符。worker 的 pid 所有会话共享，判存活还要叠加该日志 mtime 在 `live_minutes` 内；
+  只有 hook 的切片和 `Session title:` 标题生成会话要滤掉。worker 没有控制台，点击聚焦靠 `core/winui._host_window`
+  沿父进程链命中 `Qoder CN` 主窗口（实测命中），多会话共用一扇窗口、不切标签。
+- **`turn_stats` 属于上一次回合，新回合必须清掉**：`SegmentStream` 里 `turn.finished` 写入"上轮 N 步 / 时长"，
+  若 `turn.started` / `input.prompt.received` 不清，新回合在两次事件之间的安静期（实测 33 秒）会被 `derive()`
+  判成 `idle`，还挂着上一轮的统计——用户看到的就是"活动中的会话显示空闲待输入"。用 `in_turn` 标记，回合中
+  即使没有更具体的信号也返回 `model`，别让 `turn_stats` 抢在前面。
 - **VS Code 会话的身份不能从 events 日志里取**：`~/.copilot/session-state/<id>/events.jsonl` 动辄几十 MB，
   尾部窗口永远读不到头部，cwd / 标题 / 起始时间只能来自同目录的 `workspace.yaml`。
   存活看 `inuse.<pid>.lock` 的文件名 PID —— 进程退出后锁文件不会清理，残留必须过 `Liveness` 才算数；
@@ -123,6 +131,10 @@ UI 不认识任何 CLI 特有的字段；适配器不认识 tkinter。
   opencode 的执行占用标记（`SessionStore.claim`，`listSuspended` 用 `time_suspended is not null`），
   但它在**回合结束进入空闲时会被清空**——只用 claim 会让空闲的当前会话变灰。所以还要叠加
   `time_updated` 新鲜度（`config.live_minutes`，默认 30 分钟）覆盖空闲间隙；两者都没有的才是关闭的历史。
+  反过来，异常退出时 claim **不会被清空**：残留的 claim 会让会话一直是 `alive`，直到 `max_idle_minutes`
+  （6 小时）才被 `dropped()` 清掉，期间还显示成活跃状态。`_alive()` 因此还要求 claim 自身落在
+  `max_claim_minutes`（默认 120 分钟）内，超了就按已退出处理，走 `recent_dead_minutes` 的宽限。
+  别用 `live_minutes` 当 claim 上限——长时间跑的工具调用可能几小时不写库，会误杀活跃会话。
   窗口 pid 只用于点击聚焦——location switch 会改 `session_v2.directory` 而不动 TUI 的 PEB cwd，
   多个活跃会话也会抢同一扇窗口，所以抢不到窗口的会话照样可以是活跃彩色（只是 `pid=0` 不可点击）。
 - **同窗口多会话的 pid 兜底要分给所有未认领会话，不是只分剩余的**：`_claim` 里第一个匹配会话 `free.remove(pid)` 后，
