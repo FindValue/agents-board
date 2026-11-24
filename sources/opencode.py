@@ -19,7 +19,7 @@ import json
 import os
 import sqlite3
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import config
 from core import i18n
@@ -43,7 +43,7 @@ _HOME_DIRS = (".local/share/opencode",)
 _HOME_DB = "opencode.db"
 # Newest sessions by activity, capped so a large store cannot stall a poll.
 _SESSIONS = """
-SELECT id, directory, slug, model, cost,
+SELECT id, directory, slug, model, cost, version,
        tokens_input, tokens_output, tokens_cache_read,
        time_created, time_updated, time_compacting, time_suspended
 FROM session_v2 WHERE parent_id IS NULL
@@ -51,6 +51,17 @@ ORDER BY time_updated DESC LIMIT 50
 """
 _RECORDS = "SELECT seq, type, data, time_updated FROM session_message WHERE session_id=? AND time_updated>? ORDER BY seq"
 _TAIL = "SELECT seq, type, data, time_updated FROM session_message WHERE session_id=? ORDER BY seq DESC LIMIT ?"
+# 2.4.0 moved tool parts out of the message's `content` into session_part; 2.3.2 was
+# the transition release and wrote to both, so one store can hold several layouts.
+# A part is also rewritten after its message row is finalized (running -> completed),
+# so parts need a separate read from the message cursor.
+_PART_TABLE_VERSION = (2, 4, 0)
+_PARTS = """
+SELECT m.seq, sp.ordinal, sp.data, sp.time_updated
+FROM session_part sp JOIN session_message m ON m.id = sp.message_id
+WHERE m.session_id = ? AND sp.type = 'tool'
+ORDER BY m.seq, sp.ordinal
+"""
 _TURN_COUNT = "SELECT COUNT(*) FROM session_message WHERE session_id=? AND type='user'"
 # A subagent's work lives in its own session (parent_id set); the parent's message
 # stream can end at idle while a child still holds an execution claim. Only the claim
@@ -93,6 +104,14 @@ def _intact(path: str) -> bool:
         return False
 
 
+def _version(value) -> tuple[int, ...]:
+    try:
+        parts = tuple(int(x) for x in str(value or "").split(".")[:3])
+    except ValueError:
+        return (0, 0, 0)
+    return parts + (0,) * (3 - len(parts))
+
+
 @dataclass
 class _Part:
     id: str
@@ -114,23 +133,39 @@ class _Record:
     parts: list[_Part] = field(default_factory=list)
 
 
-def _parts(content, ts: float) -> list[_Part]:
+def _part(blob, fallback_id: str) -> _Part | None:
+    if not isinstance(blob, dict) or blob.get("type") != "tool":
+        return None
+    state = blob.get("state") if isinstance(blob.get("state"), dict) else {}
+    arguments = state.get("input") if isinstance(state.get("input"), dict) else {}
+    todos = arguments.get("todos")
+    return _Part(
+        id=str(blob.get("id") or fallback_id),
+        name=str(blob.get("name") or "tool"),
+        status=str(state.get("status") or ""),
+        label=label_for(arguments),
+        todos=todos if isinstance(todos, list) else [],
+    )
+
+
+def _content_parts(content, ts: float) -> list[_Part]:
+    return [
+        part
+        for i, blob in enumerate(content if isinstance(content, list) else [])
+        if (part := _part(blob, f"{ts}:{i}")) is not None
+    ]
+
+
+def _table_parts(rows) -> list[_Part]:
     out = []
-    for part in content if isinstance(content, list) else []:
-        if not isinstance(part, dict) or part.get("type") != "tool":
+    for row in rows:
+        try:
+            blob = json.loads(row["data"])
+        except (TypeError, ValueError):
             continue
-        state = part.get("state") if isinstance(part.get("state"), dict) else {}
-        arguments = state.get("input") if isinstance(state.get("input"), dict) else {}
-        todos = arguments.get("todos")
-        out.append(
-            _Part(
-                id=str(part.get("id") or f"{ts}:{len(out)}"),
-                name=str(part.get("name") or "tool"),
-                status=str(state.get("status") or ""),
-                label=label_for(arguments),
-                todos=todos if isinstance(todos, list) else [],
-            )
-        )
+        part = _part(blob, f"{row['time_updated']}:{len(out)}")
+        if part is not None:
+            out.append(part)
     return out
 
 
@@ -151,7 +186,7 @@ def _parse(seq: int, kind: str, updated: int, data) -> _Record | None:
         record.opened = _ms(times.get("created")) or record.ts
         record.closed = _ms(times.get("completed"))
         record.finish = str(blob.get("finish") or "")
-        record.parts = _parts(blob.get("content"), record.ts)
+        record.parts = _content_parts(blob.get("content"), record.ts)
     return record
 
 
@@ -278,6 +313,7 @@ class _State:
     watermark: dict[str, int] = field(default_factory=dict)
     folds: dict[str, _Fold] = field(default_factory=dict)
     hosts: _Hosts = field(default_factory=_Hosts)
+    part_table: bool | None = None
 
 
 class OpencodeSource(AgentSource):
@@ -374,6 +410,7 @@ class OpencodeSource(AgentSource):
             st.path = ""
             st.watermark.clear()
             st.folds.clear()
+            st.part_table = None
         if st.conn is None and path:
             uri = f"file:{os.path.abspath(path).replace(os.sep, '/')}?mode=ro"
             try:
@@ -386,7 +423,18 @@ class OpencodeSource(AgentSource):
             st.path = path
         return st.conn
 
-    def _records(self, conn: sqlite3.Connection, key: str, st: _State) -> list[_Record]:
+    def _part_table(self, conn: sqlite3.Connection, st: _State) -> bool:
+        if st.part_table is None:
+            st.part_table = bool(
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_part'"
+                ).fetchone()
+            )
+        return st.part_table
+
+    def _records(
+        self, conn: sqlite3.Connection, key: str, st: _State
+    ) -> tuple[list[_Record], dict[int, list[_Part]]]:
         cursor = st.watermark.get(key, 0)
         if cursor:
             rows = conn.execute(_RECORDS, (key, cursor)).fetchall()
@@ -401,7 +449,11 @@ class OpencodeSource(AgentSource):
             if record is not None:
                 parsed.append(record)
         st.watermark[key] = newest
-        return parsed
+        grouped: dict[int, list[sqlite3.Row]] = {}
+        if self._part_table(conn, st):
+            for row in conn.execute(_PARTS, (key,)):
+                grouped.setdefault(row["seq"], []).append(row)
+        return parsed, {seq: _table_parts(rows) for seq, rows in grouped.items()}
 
     # -- discovery -----------------------------------------------------------
 
@@ -450,8 +502,23 @@ class OpencodeSource(AgentSource):
         if fold is None:
             fold = _Fold()
             st.folds[key] = fold
-        for record in self._records(conn, key, st):
+        records, tool_parts = self._records(conn, key, st)
+        for record in records:
             fold.feed(record)
+        # 2.4+ keeps parts only in session_part, older versions only in content, and
+        # 2.3.2 wrote to both — merge by part id with the table winning. A part is also
+        # rewritten after its message row is finalized, so refresh records we already
+        # read; feed() compares part statuses so the tool/error counters do not double.
+        new_layout = _version(row["version"]) >= _PART_TABLE_VERSION
+        for seq, parts in tool_parts.items():
+            old = fold.records.get(seq)
+            if old is None:
+                continue
+            if not new_layout and old.parts:
+                by_id = {p.id: p for p in old.parts}
+                by_id.update((p.id, p) for p in parts)
+                parts = list(by_id.values())
+            fold.feed(replace(old, parts=parts))
 
         path = row["directory"] or ""
         state, detail = fold.derive(now, _ms(row["time_compacting"]))

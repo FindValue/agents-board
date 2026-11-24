@@ -12,7 +12,9 @@ Python 3.13 + tkinter，**只用标准库**，无构建、无依赖、无测试�
 board.py            tkinter HUD：绘制、透明度动画、拖拽/缩放、右键菜单、点卡片切窗口、geometry 持久化
 config.py           config.json 读写 + DEFAULTS + 几何持久化（唯一配置入口）
 core/state.py       AgentSession —— UI 与适配器之间唯一的共享数据模型 + 格式化/裁剪/payload 取值工具
-                    + 会话去留判定 dropped() / 进程退出态 dead_detail()
+                    + 会话去留判定 dropped() / 进程退出态 dead_detail()；状态表 STATE_META 的 label 是 i18n key
+core/i18n.py        界面语言：系统语言检测（auto，检测不到用英文）+ t(key, **kw) + 配置持久化
+core/locales/       每种语言一个 JSON 文案包（zh-CN.json / en.json），同 key 不同文案
 core/winui.py       Windows 呈现层：DPI 感知、设计像素↔设备像素换算、DWM 圆角、focus_process() 拉起宿主窗口
 core/pid.py         跨平台进程存活判定（Windows 走 ctypes OpenProcess）+ Liveness 结果缓存
                     + 进程事实：processes() 快照 / console_of() 控制台与 tab 标题 / cwd_of() 读 PEB 拿工作目录
@@ -32,8 +34,10 @@ UI 不认识任何 CLI 特有的字段；适配器不认识 tkinter。
 
 ### 1. 严格 DRY
 
-- **状态词汇表只有一处**：`core/state.STATE_META`（label / 颜色 / 是否需要用户）。新增状态就在那里加一行，
-  不要在适配器或卡片里再写一套 `if state == ...` 的颜色/文案映射。
+- **状态词汇表只有一处**：`core/state.STATE_META`（label key / 颜色 / 是否需要用户）。新增状态就在那里加一行，
+  并在每个 `core/locales/<code>.json` 里加一条同名 key 的文案；不要在适配器或卡片里再写一套 `if state == ...` 的颜色/文案映射。
+- **所有界面文案都要走 i18n**：`core/locales/` 下每种语言一个 JSON，两份 key 集合必须一致，代码里只 `i18n.t(key, ...)`，
+  不要硬编码中英文字面量（标识符仍用英文）。`auto` 检测系统显示语言，检测不到回退英文，右键菜单可切换，选择存 `config.json` 的 `language`。
 - **文本截断与时长/相对时间/用量格式化只有一处**：`clip` / `fmt_duration` / `fmt_age` / `fmt_tokens` / `display_width`（`core/state.py`）。
   board 与 `render_text` 都必须复用它们，不要各写一份。
 - **文件系统遍历、时间戳解析、payload 取值等小工具只写一次**；发现第二个调用点就提到 `core/`，
@@ -59,7 +63,7 @@ UI 不认识任何 CLI 特有的字段；适配器不认识 tkinter。
 
 - `from __future__ import annotations`，类型标注用新语法（`list[str]`、`X | None`）。
 - 注释默认不写；只在解释非显然的原因时写一行（例如下面这些坑）。文件 docstring 说明该模块的边界即可。
-- 中文 UI 文案，标识符英文。
+- 界面文案走 i18n，每种语言一个 JSON；标识符英文。
 - 只做被要求的事：不顺手重构、不给不可能发生的情况加兜底、不写 README 或分析文档（除非要求）。
 
 ## 已知坑（改动前先看）
@@ -104,16 +108,30 @@ UI 不认识任何 CLI 特有的字段；适配器不认识 tkinter。
   `log/opencode.log` 是 `key=value` 文本，没有 session id / prompt / 工具名 / token，什么也推不出来。
   只读连接用 `mode=ro` + `PRAGMA query_only=1`（实测服务端持续写时 300 次查询 0 错误、中位 0.11ms）；
   **再加 `immutable=1` 会静默返回 0 行** —— 已提交的行还在 -wal 里，别为了"更快"把它打开。
-- **`session_message` 最新那一行的 `data` 被原地改写**（工具 part 的 pending→running→completed 全在同一行），
-  所以增量游标是 `time_updated` 而不是 `seq`；同一行会被反复读到，计数必须按 part 的 `id` 和上一份同 seq 记录比对
-  （`_Fold.feed`），否则 `工具` 成倍翻。回合结束的信号是 `type='idle'` 行，不是 `session_v2.time_idle`；
-  `session_v2.title` 实测恒为 NULL，标题用 `slug`；`parent_id IS NULL` 之外的子会话不单独出卡片（活动汇在父会话的 `subtask` 行）。
+- **工具 part 存在哪张表取决于 opencode 版本，别只读 `session_message.data.content`**：2.4.0 起 part 移到独立的
+  `session_part` 表（message 的 `content` 恒为空），2.3.2 是过渡版两处都写，更早的版本只在 content。按
+  `session_v2.version` 检测：≥2.4 以 table 为准，<2.4 把 content 和 table 按 part id 合并（table 覆盖同 id），
+  表不存在就只用 content——只认一种来源会让另一版本的会话工具数归零，卡在「请求模型中」。
+  **part 在 message 行落库之后才被改写**（running→completed），所以已读过的 message 也要定期从 table 刷新 parts；
+  增量游标仍是 `time_updated` 而不是 `seq`，计数按 part 的 `id` 和上一份同 seq 记录比对（`_Fold.feed`），否则 `工具` 成倍翻。
+  `question` 工具等待用户回答时状态是 `running`（既不是 pending 也还没 completed），名字就叫 `question`，
+  所以 `asking` 要认 name=question + pending/running，漏掉就会显示「请求模型中」。
+  回合结束的信号是 `type='idle'` 行，不是 `session_v2.time_idle`；
+  `session_v2.title` 实测恒为 NULL，标题用 `slug`；`parent_id IS NULL` 之外的子会话不单独出卡片（父会话的 `subtask` 行只用于计数文案，
+  子代理是否还在跑要按 `parent_id` 查子会话的 `time_suspended`，见下面子代理那条）。
 - **会话是否活着用 `time_suspended` + 活动新鲜度，`别用窗口匹配推`**：`time_suspended` 是
   opencode 的执行占用标记（`SessionStore.claim`，`listSuspended` 用 `time_suspended is not null`），
   但它在**回合结束进入空闲时会被清空**——只用 claim 会让空闲的当前会话变灰。所以还要叠加
   `time_updated` 新鲜度（`config.live_minutes`，默认 30 分钟）覆盖空闲间隙；两者都没有的才是关闭的历史。
   窗口 pid 只用于点击聚焦——location switch 会改 `session_v2.directory` 而不动 TUI 的 PEB cwd，
   多个活跃会话也会抢同一扇窗口，所以抢不到窗口的会话照样可以是活跃彩色（只是 `pid=0` 不可点击）。
+- **同窗口多会话的 pid 兜底要分给所有未认领会话，不是只分剩余的**：`_claim` 里第一个匹配会话 `free.remove(pid)` 后，
+  一个 pid 多会话时 `free` 立刻空掉，兜底 `if free:` 不生效，后面的会话全拿 `pid=0` 点不动（用户报过「非在前会话切不到窗口」就是这）。
+  保留一份完整 `all_pids`，把未认领的会话都映射到它——它们本来就是同一 TUI 的标签页，共享 pid 是对的。
+- **子代理是否活跃只看 `time_suspended`，不能用 `time_updated` 新鲜度**：父会话消息流结束在 `idle` 时，子代理可能还在后台跑，
+  活动全在子会话自己的记录里；按 `parent_id` 统计带 claim 的子会话，父会话 `idle`/`starting` 且有活跃子会话就翻成 `subagent`（青色点，
+  别和 `idle` 的绿撞色，否则远看会误判为空闲）。子代理跑完 claim 清空但 `time_updated` 还要过 `live_minutes` 才过期——
+  用新鲜度会把结束的子代理一直算成活跃，状态卡在「子代理运行中」下不来（用户报过这个）；父会话才需要新鲜度覆盖空闲间隙，子代理没有「开着等输入」的空档。
 - **opencode 库里没有任何 pid**，控制台标题又恒为 `'OpenCode'`（改名的是 tab，不是控制台），
   所以只能拿 `pid.cwd_of(candidate)`（读 PEB）等于 `session_v2.directory` 来认窗口；`opencode serve` 没有控制台，天然被排除。
   `AttachConsole` 只在**无控制台**的进程里成功：HUD（pythonw）正常，`python board.py --once` 在终端里跑会全部退化 `pid=0`，
@@ -164,6 +182,10 @@ python -m py_compile board.py config.py core/*.py sources/*.py
 python board.py --once
 python board.py --once --repeat    # 连刷两轮，计数必须稳定
 ```
+
+改 i18n 时还要确认两份 `core/locales/*.json` key 集合一致、代码用到的 key 都在表里；切语言（右键菜单）后菜单文案、
+卡片状态/详情、底栏都要跟着变，选择要写回 `config.json` 的 `language`。`display_width` 不要跟着语言切成单宽——
+它算的是终端里字符的实际宽度（英文界面里的中文 prompt 仍占两格），与界面语言无关。
 
 涉及绘制/交互时再用截图确认（悬停不透明、圆角、自动高度、锁切换、拖拽缩放、geometry 落盘），
 跑完清理 `shot.ps1`、临时 png、`__pycache__`、测试产生的 `geometry.json`。
