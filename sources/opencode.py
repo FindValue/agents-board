@@ -7,10 +7,10 @@ Layout under the OpenCode data home (~/.local/share/opencode by default):
 The TUI keeps the newest message row open and rewrites its `data` in place while a turn
 streams, so the incremental cursor is `time_updated` rather than `seq`. Nothing in the
 database records a pid, so a card is only clickable when the running TUI can be matched
-by the directory it was launched from — and that same mapping is the only way to tell an
-open window from session history: each window displays one session (`_claim`), so any
-session no window claims is history that only survives the just-exited grace window.
-Sub-agent sessions are folded into their parent's `subtask` rows, hence `parent_id IS NULL`.
+by the directory it was launched from. Liveness comes from `time_suspended` plus recent
+activity, never from that window match; a claim left by an abnormal exit ages out via
+`max_claim_minutes`. Sub-agent sessions are folded into their parent's `subtask` rows,
+hence `parent_id IS NULL`.
 """
 
 from __future__ import annotations
@@ -94,6 +94,14 @@ def _dir_key(path) -> str:
 
 def _ms(value) -> float:
     return value / 1000 if isinstance(value, (int, float)) else 0.0
+
+
+def _alive(now: float, row: sqlite3.Row) -> bool:
+    """A stale claim from an abnormal exit must not pin a dead session to the board."""
+    if now - _ms(row["time_updated"]) < config.settings["live_minutes"] * 60:
+        return True
+    claim = _ms(row["time_suspended"])
+    return bool(claim) and now - claim < config.settings["max_claim_minutes"] * 60
 
 
 def _intact(path: str) -> bool:
@@ -360,8 +368,7 @@ class OpencodeSource(AgentSource):
         live = []
         for row in rows:
             age = now - _ms(row["time_updated"])
-            alive = row["time_suspended"] is not None or age < config.settings["live_minutes"] * 60
-            if not dropped(age, alive):
+            if not dropped(age, _alive(now, row)):
                 live.append((row, _dir_key(row["directory"])))
         for row, directory in live:
             if not free:
@@ -488,13 +495,13 @@ class OpencodeSource(AgentSource):
         key = row["id"]
         updated = _ms(row["time_updated"])
         age = now - updated
-        # A session is "open" if it has an execution claim (`time_suspended`) OR it
+        # A session is "open" if it has a fresh execution claim (`time_suspended`) OR it
         # wrote anything recently. The claim is cleared at turn end, so an idle TUI
         # session would look closed by claim alone; the recent-activity window covers
-        # that gap. A closed session has neither, and ages out via `dropped()`.
+        # that gap. An abnormal exit never clears its claim, so `_alive()` caps the
+        # claim's age; a closed session then ages out via `dropped()`.
         # Window match (`pid`) is only click-to-focus, never liveness.
-        claimed = row["time_suspended"] is not None
-        alive = claimed or age < config.settings["live_minutes"] * 60
+        alive = _alive(now, row)
         if dropped(age, alive):
             return None
 

@@ -29,6 +29,9 @@ DEFAULTS: dict = {
     # A session with no execution claim stays "live" this long after its last activity,
     # so an idle-but-open session (claim cleared at turn end) keeps its colour.
     "live_minutes": 30,
+    # A claim left behind by an abnormal exit is never cleared; past this age it no
+    # longer proves the session is open, so the zombie card can age out.
+    "max_claim_minutes": 120,
     # Keep showing runs whose process already exited, for this long
     "include_recent_dead": True,
     "recent_dead_minutes": 10,
