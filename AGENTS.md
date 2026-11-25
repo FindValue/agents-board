@@ -92,6 +92,12 @@ UI 不认识任何 CLI 特有的字段；适配器不认识 tkinter。
   若 `turn.started` / `input.prompt.received` 不清，新回合在两次事件之间的安静期（实测 33 秒）会被 `derive()`
   判成 `idle`，还挂着上一轮的统计——用户看到的就是"活动中的会话显示空闲待输入"。用 `in_turn` 标记，回合中
   即使没有更具体的信号也返回 `model`，别让 `turn_stats` 抢在前面。
+- **桌面版 worker 的主回合与技能复查子回合并发，`in_turn` 不能是一个 bool**：每条事件都带顶层 `turn_id`，
+  `turn.started` / `input.prompt.received` 记下它、`turn.finished` 只清它自己；实测子回合 `skill-ev...` 的
+  `turn.finished` 落在主回合 `469198e2...` 生成回复的 4 分钟静默期中间，单个 bool 会被清成 `False`，
+  于是 `derive()` 落到 `turn_stats` 把还在请求中的会话显示成「空闲待输入」。`active_turns` 按 `turn_id` 记，
+  `in_turn = bool(active_turns)`，别退回单标记；桌面版日志里也没有 `model.request.started`，
+  模型请求阶段只有 `loop.iteration.started` / `loop.iteration.finished`，靠 `in_turn` 覆盖安静期。
 - **VS Code 会话的身份不能从 events 日志里取**：`~/.copilot/session-state/<id>/events.jsonl` 动辄几十 MB，
   尾部窗口永远读不到头部，cwd / 标题 / 起始时间只能来自同目录的 `workspace.yaml`。
   存活看 `inuse.<pid>.lock` 的文件名 PID —— 进程退出后锁文件不会清理，残留必须过 `Liveness` 才算数；
@@ -127,6 +133,12 @@ UI 不认识任何 CLI 特有的字段；适配器不认识 tkinter。
   回合结束的信号是 `type='idle'` 行，不是 `session_v2.time_idle`；
   `session_v2.title` 实测恒为 NULL，标题用 `slug`；`parent_id IS NULL` 之外的子会话不单独出卡片（父会话的 `subtask` 行只用于计数文案，
   子代理是否还在跑要按 `parent_id` 查子会话的 `time_suspended`，见下面子代理那条）。
+- **`idle` 行的 `outcome` 只描述上一次回合，不能当当前状态**：实测有 `succeeded` / `failed` /
+   `interrupted` 三种，`failed` 还可能是 `provider.auth` 这种与会话无关的全局错误。把它映射成 `error`
+   会一直挂到下一条 `user` 记录（实测挂了十几分钟），而 TUI 早就回到待输入——用户看到的就是
+   「面板上一轮异常、窗口里待输入」。`error` 状态留给卡住的 `pending/running` tool part；
+   `outcome != succeeded` 时返回 `idle`，把 reason 放进 detail（`detail_prev_turn` + 时长），
+   别让历史结果占住 attention 位。
 - **会话是否活着用 `time_suspended` + 活动新鲜度，`别用窗口匹配推`**：`time_suspended` 是
   opencode 的执行占用标记（`SessionStore.claim`，`listSuspended` 用 `time_suspended is not null`），
   但它在**回合结束进入空闲时会被清空**——只用 claim 会让空闲的当前会话变灰。所以还要叠加

@@ -267,8 +267,6 @@ class _Fold:
 
         if newest.kind == "idle":
             outcome = newest.text or "succeeded"
-            if outcome not in ("succeeded", ""):
-                return "error", i18n.t("detail_prev_turn", outcome=clip(outcome, 40))
             waited = fmt_age(now - newest.ts)
             last = max((r for r in records if r.kind == "assistant"), key=lambda r: r.seq, default=None)
             # `completed=None` means the assistant row was never closed — the model may
@@ -276,6 +274,11 @@ class _Fold:
             # new user prompt hasn't landed in the database yet).
             if last and not last.closed:
                 return "model", i18n.t("detail_model", age=waited)
+            # `outcome` describes how the *previous* turn ended, not what the session is
+            # doing now: a failed or interrupted turn still leaves it waiting for input.
+            # Keep the reason in the detail instead of pinning the card on "上一轮异常".
+            if outcome not in ("succeeded", ""):
+                return "idle", i18n.t("detail_prev_turn", outcome=clip(outcome, 40)) + " · " + waited
             if last and last.closed:
                 return "idle", i18n.t(
                     "detail_prev_duration",

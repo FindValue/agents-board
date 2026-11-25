@@ -116,7 +116,7 @@ class SegmentStream:
         self.transcript = ""
         self.last_ts = 0.0
         self.last_type = ""
-        self.in_turn = False
+        self.active_turns: set[str] = set()
         self.turn_failure = ""
         self.last_error = ""
         self.turn_stats = ""
@@ -130,23 +130,25 @@ class SegmentStream:
             self.last_ts = max(self.last_ts, ts)
             self.last_type = kind
             tcid = ev.get("tool_call_id") or ""
-            self._apply(kind, data, ts, tcid, ev.get("level"))
+            self._apply(kind, data, ts, tcid, ev.get("level"), ev.get("turn_id") or "")
 
-    def _apply(self, kind: str, data: dict, ts: float, tcid: str, level: str | None) -> None:
+    def _apply(
+        self, kind: str, data: dict, ts: float, tcid: str, level: str | None, turn_id: str
+    ) -> None:
         if kind == "session.config.loaded":
             self.model = data.get("model") or self.model
         elif kind == "input.prompt.received":
             self.prompt = data.get("text_preview") or ""
             self.turn_stats = ""
             self.turn_failure = ""
-            self.in_turn = True
+            self.active_turns.add(turn_id)
         elif kind == "turn.started":
             self.turns += 1
             self.model = data.get("model") or self.model
             self.turn_failure = ""
             self.turn_stats = ""
             self.retry = None
-            self.in_turn = True
+            self.active_turns.add(turn_id)
         elif kind == "model.request.started":
             self.request = (int(data.get("request_index") or 1), ts)
         elif kind == "model.response.completed":
@@ -235,7 +237,7 @@ class SegmentStream:
                     self.transcript = path
         elif kind == "turn.finished":
             reason = data.get("reason") or "end_turn"
-            self.in_turn = False
+            self.active_turns.discard(turn_id)
             self.request = None
             self.pend_tools.clear()
             self.pend_perm.clear()
@@ -252,6 +254,12 @@ class SegmentStream:
         elif kind == "loop.iteration.finished":
             if data.get("error_tool_result_count"):
                 self.errors += int(data["error_tool_result_count"])
+
+    @property
+    def in_turn(self) -> bool:
+        # The desktop worker runs a main turn and skill-review subagent turns at the
+        # same time; one turn's finish must not hide another still generating.
+        return bool(self.active_turns)
 
     def derive(self, now: float) -> tuple[str, str]:
         if self.pend_ask:
